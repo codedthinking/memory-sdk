@@ -1,0 +1,18 @@
+export type {
+  Message,
+  MemoryItem,
+  SearchOptions,
+  GetOptions,
+  DeleteTarget,
+  AnalyzeResult,
+  MemoryProvider,
+  MemoryProviderConfig,
+  EverOSConfig,
+  HindsightConfig,
+  NAMSConfig,
+  ZepConfig,
+  Mem0Config,
+  SupermemoryConfig,
+} from "./types.js";
+
+export { createMemoryProvider } from "./factory.js";
