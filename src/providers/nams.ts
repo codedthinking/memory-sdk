@@ -14,11 +14,13 @@ const DEFAULT_BASE_URL = "https://memory.neo4jlabs.com";
 export class NAMSProvider implements MemoryProvider {
   readonly name = "nams";
   private readonly apiKey: string;
+  private readonly workspaceId: string;
   private readonly baseUrl: string;
   private conversationId?: string;
 
   constructor(config: NAMSConfig) {
     this.apiKey = config.apiKey;
+    this.workspaceId = config.workspaceId;
     this.baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
   }
 
@@ -34,7 +36,6 @@ export class NAMSProvider implements MemoryProvider {
       messages: messages.map((m) => ({
         role: m.role,
         content: m.content,
-        timestamp: m.timestamp ? new Date(m.timestamp).toISOString() : undefined,
       })),
     });
   }
@@ -48,6 +49,7 @@ export class NAMSProvider implements MemoryProvider {
         type?: string;
         score?: number;
       }>;
+      searchType?: string;
     }>("/v1/entities/search", {
       query,
       limit: options?.topK ?? 10,
@@ -58,7 +60,7 @@ export class NAMSProvider implements MemoryProvider {
       content: e.description ?? e.name,
       score: e.score,
       type: e.type ?? "entity",
-      metadata: { name: e.name },
+      metadata: { name: e.name, entityType: e.type },
     }));
   }
 
@@ -69,45 +71,44 @@ export class NAMSProvider implements MemoryProvider {
   }
 
   async list(options?: ListOptions): Promise<Memory[]> {
-    const page = options?.page ?? 1;
-    const pageSize = options?.pageSize ?? 20;
-    const offset = (page - 1) * pageSize;
-
     if (options?.type === "conversation" && this.conversationId) {
       const result = await this.request<{
         messages: Array<{
           id: string;
           role: string;
           content: string;
-          timestamp?: string;
+          createdAt?: string;
+          tokenCount?: number;
         }>;
-      }>("GET", `/v1/conversations/${this.conversationId}/messages?limit=${pageSize}&offset=${offset}`);
+      }>("GET", `/v1/conversations/${this.conversationId}/messages`);
 
       return result.messages.map((m) => ({
         id: m.id,
         content: m.content,
         type: "message",
-        createdAt: m.timestamp ? new Date(m.timestamp).getTime() : undefined,
-        metadata: { role: m.role },
+        createdAt: m.createdAt ? new Date(m.createdAt).getTime() : undefined,
+        metadata: { role: m.role, tokenCount: m.tokenCount },
       }));
     }
 
+    // Default: list entities as memories
     const result = await this.request<{
       entities: Array<{
         id: string;
         name: string;
         description?: string;
         type?: string;
-        created_at?: string;
+        confidence?: number;
+        createdAt?: string;
       }>;
-    }>("GET", `/v1/entities?limit=${pageSize}&offset=${offset}`);
+    }>("GET", "/v1/entities");
 
     return result.entities.map((e) => ({
       id: e.id,
       content: e.description ?? e.name,
       type: e.type ?? "entity",
-      createdAt: e.created_at ? new Date(e.created_at).getTime() : undefined,
-      metadata: { name: e.name },
+      createdAt: e.createdAt ? new Date(e.createdAt).getTime() : undefined,
+      metadata: { name: e.name, confidence: e.confidence },
     }));
   }
 
@@ -121,7 +122,7 @@ export class NAMSProvider implements MemoryProvider {
           type?: string;
           score?: number;
         }>;
-      }>("/v1/entities/search", { query, limit: 20 });
+      }>("/v1/entities/search", { query });
 
       return result.entities.map((e) => ({
         id: e.id,
@@ -138,65 +139,66 @@ export class NAMSProvider implements MemoryProvider {
         name: string;
         description?: string;
         type?: string;
+        confidence?: number;
+        sourceStage?: string;
       }>;
-    }>("GET", "/v1/entities?limit=50");
+    }>("GET", "/v1/entities");
 
     return result.entities.map((e) => ({
       id: e.id,
       name: e.name,
       type: e.type,
       description: e.description,
+      metadata: { confidence: e.confidence, sourceStage: e.sourceStage },
     }));
   }
 
   async facts(query?: string): Promise<Fact[]> {
-    if (!query) {
-      const result = await this.request<{
-        graph: Array<{
-          source: { id: string; name: string };
-          relation: string;
-          target: { id: string; name: string };
-        }>;
-      }>("GET", "/v1/entities/graph");
+    const result = await this.request<{
+      nodes: Array<{
+        id: string;
+        name: string;
+        type?: string;
+        description?: string;
+      }>;
+      edges: Array<{
+        id: string;
+        sourceId: string;
+        targetId: string;
+        type: string;
+        predicate?: string;
+        confidence?: number;
+        method?: string;
+      }>;
+    }>("GET", "/v1/entities/graph");
 
-      return result.graph.map((edge, i) => ({
-        id: `rel-${i}`,
-        subject: edge.source.name,
-        predicate: edge.relation,
-        object: edge.target.name,
-        metadata: { sourceId: edge.source.id, targetId: edge.target.id },
-      }));
+    const nodeMap = new Map(result.nodes.map((n) => [n.id, n.name]));
+
+    let facts = result.edges.map((edge) => ({
+      id: edge.id,
+      subject: nodeMap.get(edge.sourceId) ?? edge.sourceId,
+      predicate: edge.predicate || edge.type,
+      object: nodeMap.get(edge.targetId) ?? edge.targetId,
+      confidence: edge.confidence,
+      metadata: {
+        sourceId: edge.sourceId,
+        targetId: edge.targetId,
+        edgeType: edge.type,
+        method: edge.method,
+      },
+    }));
+
+    if (query) {
+      const q = query.toLowerCase();
+      facts = facts.filter(
+        (f) =>
+          f.subject.toLowerCase().includes(q) ||
+          f.object.toLowerCase().includes(q) ||
+          f.predicate.toLowerCase().includes(q),
+      );
     }
 
-    // Search entities then expand their graph
-    const ents = await this.entities(query);
-    if (!ents.length) return [];
-
-    const allFacts: Fact[] = [];
-    for (const ent of ents.slice(0, 5)) {
-      const result = await this.post<{
-        nodes: Array<{ id: string; name: string }>;
-        edges: Array<{
-          source: string;
-          relation: string;
-          target: string;
-        }>;
-      }>("/v1/graph/expand", { entity_id: ent.id });
-
-      for (const [i, edge] of result.edges.entries()) {
-        const sourceNode = result.nodes.find((n) => n.id === edge.source);
-        const targetNode = result.nodes.find((n) => n.id === edge.target);
-        allFacts.push({
-          id: `${ent.id}-rel-${i}`,
-          subject: sourceNode?.name ?? edge.source,
-          predicate: edge.relation,
-          object: targetNode?.name ?? edge.target,
-          metadata: { sourceId: edge.source, targetId: edge.target },
-        });
-      }
-    }
-
-    return allFacts;
+    return facts;
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
@@ -212,6 +214,7 @@ export class NAMSProvider implements MemoryProvider {
       method,
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
+        "X-Workspace-Id": this.workspaceId,
         "Content-Type": "application/json",
       },
       ...(body ? { body: JSON.stringify(body) } : {}),

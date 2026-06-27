@@ -101,6 +101,7 @@ export interface HindsightConfig {
 export interface NAMSConfig {
   provider: "nams";
   apiKey: string;
+  workspaceId: string;
   baseUrl?: string;
 }
 
