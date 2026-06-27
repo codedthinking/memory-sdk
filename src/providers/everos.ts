@@ -46,15 +46,23 @@ export class EverOSProvider implements MemoryProvider {
           id: string;
           summary: string;
           episode: string;
-          timestamp: number;
+          timestamp: string;
+          score?: number | null;
+          atomic_facts?: Array<{
+            id: string;
+            atomic_fact: string;
+            score: number;
+          }>;
         }>;
         profiles?: Array<{
+          id: string;
+          item_id: string;
           profile_data: {
-            explicit_info: Array<{ key: string; value: string }>;
-            implicit_traits: Array<{ trait: string; confidence: number }>;
+            item_type: string;
+            embed_text: string;
           };
+          score: number;
         }>;
-        total_count: number;
       };
     }>("/api/v1/memories/search", {
       filters: { user_id: this.userId },
@@ -72,21 +80,21 @@ export class EverOSProvider implements MemoryProvider {
           id: ep.id,
           text: ep.summary || ep.episode,
           type: "episodic_memory",
-          timestamp: ep.timestamp,
+          score: ep.score ?? undefined,
+          timestamp: parseTimestamp(ep.timestamp),
           metadata: { episode: ep.episode, summary: ep.summary },
         });
       }
     }
 
     if (res.data.profiles) {
-      for (const [i, p] of res.data.profiles.entries()) {
+      for (const p of res.data.profiles) {
         items.push({
-          id: `profile-${i}`,
-          text: p.profile_data.explicit_info
-            .map((f) => `${f.key}: ${f.value}`)
-            .join("\n"),
-          type: "profile",
-          metadata: { profile_data: p.profile_data },
+          id: p.id,
+          text: p.profile_data.embed_text,
+          type: p.profile_data.item_type,
+          score: p.score,
+          metadata: { item_id: p.item_id },
         });
       }
     }
@@ -103,12 +111,21 @@ export class EverOSProvider implements MemoryProvider {
           summary: string;
           episode: string;
           subject: string;
-          timestamp: number;
+          timestamp: string;
         }>;
         profiles?: Array<{
+          id: string;
           profile_data: {
-            explicit_info: Array<{ key: string; value: string }>;
-            implicit_traits: Array<{ trait: string; confidence: number }>;
+            explicit_info: Array<{
+              category: string;
+              description: string;
+              item_id: string;
+            }>;
+            implicit_traits: Array<{
+              trait: string;
+              description: string;
+              item_id: string;
+            }>;
           };
           scenario: string;
           memcell_count: number;
@@ -123,14 +140,27 @@ export class EverOSProvider implements MemoryProvider {
     });
 
     if (memoryType === "profile" && res.data.profiles) {
-      return res.data.profiles.map((p, i) => ({
-        id: `profile-${i}`,
-        text: p.profile_data.explicit_info
-          .map((f) => `${f.key}: ${f.value}`)
-          .join("\n"),
-        type: "profile",
-        metadata: { profile_data: p.profile_data, scenario: p.scenario },
-      }));
+      const items: MemoryItem[] = [];
+      for (const p of res.data.profiles) {
+        const lines: string[] = [];
+        for (const info of p.profile_data.explicit_info) {
+          lines.push(`[${info.category}] ${info.description}`);
+        }
+        for (const trait of p.profile_data.implicit_traits) {
+          lines.push(`[trait: ${trait.trait}] ${trait.description}`);
+        }
+        items.push({
+          id: p.id,
+          text: lines.join("\n"),
+          type: "profile",
+          metadata: {
+            profile_data: p.profile_data,
+            scenario: p.scenario,
+            memcell_count: p.memcell_count,
+          },
+        });
+      }
+      return items;
     }
 
     if (res.data.episodes) {
@@ -138,7 +168,7 @@ export class EverOSProvider implements MemoryProvider {
         id: ep.id,
         text: ep.summary || ep.episode,
         type: "episodic_memory",
-        timestamp: ep.timestamp,
+        timestamp: parseTimestamp(ep.timestamp),
         metadata: { episode: ep.episode, subject: ep.subject },
       }));
     }
@@ -201,4 +231,11 @@ function env(key: string, fallback?: string): string {
     throw new Error(`${key} environment variable is not set`);
   }
   return val ?? fallback!;
+}
+
+function parseTimestamp(ts: string | number | undefined): number | undefined {
+  if (ts === undefined) return undefined;
+  if (typeof ts === "number") return ts;
+  const ms = Date.parse(ts);
+  return Number.isNaN(ms) ? undefined : ms;
 }
