@@ -4,6 +4,7 @@ import type {
   Memory,
   Entity,
   Fact,
+  Reflection,
   RecallOptions,
   ListOptions,
   HindsightConfig,
@@ -177,6 +178,26 @@ export class HindsightProvider implements MemoryProvider {
     }
 
     return facts;
+  }
+
+  async reflect(query: string): Promise<Reflection> {
+    const result = await this.post<{
+      text: string;
+      usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
+    }>(this.bankPath("/reflect"), {
+      query,
+      budget: "mid",
+    });
+
+    return {
+      content: result.text ?? "",
+      metadata: { usage: result.usage },
+    };
+  }
+
+  async consolidate(): Promise<void> {
+    // Hindsight consolidation endpoint
+    await this.post(this.bankPath("/consolidate"), {});
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {

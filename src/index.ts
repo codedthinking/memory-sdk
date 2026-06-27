@@ -3,6 +3,7 @@ export type {
   Memory,
   Entity,
   Fact,
+  Reflection,
   RecallOptions,
   ListOptions,
   MemoryProvider,

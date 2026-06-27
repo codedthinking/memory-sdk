@@ -37,6 +37,13 @@ export interface Fact {
   metadata?: Record<string, unknown>;
 }
 
+/** Result of reflecting on memories — provenance and reasoning. */
+export interface Reflection {
+  content: string;
+  sources?: Memory[];
+  metadata?: Record<string, unknown>;
+}
+
 // --- Options ---
 
 /** Options for recalling memories. */
@@ -79,6 +86,12 @@ export interface MemoryProvider {
 
   /** Get extracted facts (relations/edges). */
   facts?(query?: string): Promise<Fact[]>;
+
+  /** Reason over memories — "how do we know this?" */
+  reflect?(query: string): Promise<Reflection>;
+
+  /** Merge, reorganize, and clean up fragmented memories (like sleep consolidation). */
+  consolidate?(): Promise<void>;
 }
 
 // --- Provider configs (discriminated union) ---

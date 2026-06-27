@@ -4,6 +4,7 @@ import type {
   Memory,
   Entity,
   Fact,
+  Reflection,
   RecallOptions,
   ListOptions,
   EverOSConfig,
@@ -201,6 +202,35 @@ export class EverOSProvider implements MemoryProvider {
       predicate: info.category,
       object: info.description,
     }));
+  }
+
+  async reflect(query: string): Promise<Reflection> {
+    const episodes = await this.recall(query, { types: ["episodic_memory"], topK: 5 });
+    const facts = await this.facts();
+    const relevantFacts = facts.filter((f) =>
+      query.toLowerCase().split(/\s+/).some((w) =>
+        f.predicate.toLowerCase().includes(w) ||
+        f.object.toLowerCase().includes(w),
+      ),
+    );
+
+    const sources = episodes;
+    const factLines = relevantFacts.map((f) => `[${f.predicate}] ${f.object}`);
+    const episodeLines = episodes.map((e) => e.content);
+
+    return {
+      content: [...factLines, ...episodeLines].join("\n\n"),
+      sources,
+      metadata: { factCount: relevantFacts.length, episodeCount: episodes.length },
+    };
+  }
+
+  async consolidate(): Promise<void> {
+    // EverOS self-hosted: POST /api/v1/ome/trigger { name: "reflect_episodes" }
+    // EverOS cloud: trigger via flush which includes consolidation
+    await this.post("/api/v1/memories/flush", {
+      user_id: this.userId,
+    });
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {

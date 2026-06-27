@@ -3,6 +3,7 @@ import type {
   Message,
   Memory,
   Fact,
+  Reflection,
   RecallOptions,
   ListOptions,
   ZepConfig,
@@ -112,6 +113,28 @@ export class ZepProvider implements MemoryProvider {
       predicate: "knows",
       object: fact,
     }));
+  }
+
+  async reflect(query: string): Promise<Reflection> {
+    if (!this.threadId) {
+      return { content: "No thread context available." };
+    }
+
+    const memory = await this.request<{
+      facts?: string[];
+      summary?: { content: string };
+    }>("GET", `/threads/${this.threadId}/memory`);
+
+    const facts = memory.facts ?? [];
+    const summary = memory.summary?.content ?? "";
+    const relevant = facts.filter((f) =>
+      query.toLowerCase().split(/\s+/).some((w) => f.toLowerCase().includes(w)),
+    );
+
+    return {
+      content: [summary, ...relevant].filter(Boolean).join("\n\n"),
+      metadata: { totalFacts: facts.length, relevantFacts: relevant.length },
+    };
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
