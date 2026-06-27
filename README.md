@@ -19,45 +19,76 @@ const memory = await createMemoryProvider({
   userId: "user-123",
 });
 
-// Store messages
-await memory.store([
-  { role: "user", content: "I prefer dark mode" },
-  { role: "assistant", content: "Noted, I'll remember that." },
+// Remember conversation turns
+await memory.remember([
+  { role: "user", content: "I prefer dark mode and use Neovim." },
+  { role: "assistant", content: "Noted!" },
 ]);
 
-// Search memories
-const results = await memory.search("user preferences");
+// Recall relevant memories
+const memories = await memory.recall("editor preferences");
 
-// Analyze / reflect
-const analysis = await memory.analyze("what do I know about this user?");
+// Get extracted facts (relations)
+const userFacts = await memory.facts?.("user preferences");
+// → [{ subject: "user-123", predicate: "prefers", object: "dark mode" }, ...]
+
+// Get extracted entities (nodes)
+const entities = await memory.entities?.();
+// → [{ name: "Neovim", type: "tool", description: "..." }, ...]
+
+// Forget
+await memory.forget({ id: "mem-123" });
 ```
 
 ## Providers
 
-| Provider | Key | Docs |
-|----------|-----|------|
-| **EverOS** | `everos` | [evermind.ai](https://everos.evermind.ai) |
-| **Hindsight** | `hindsight` | [vectorize.io](https://hindsight.vectorize.io) |
-| **NAMS** | `nams` | [Neo4j Labs](https://memory.neo4jlabs.com) |
-| **Zep** | `zep` | [getzep.com](https://help.getzep.com) |
-| **Mem0** | `mem0` | [mem0.ai](https://docs.mem0.ai) |
-| **Supermemory** | `supermemory` | [supermemory.ai](https://console.supermemory.ai) |
+| Provider | Key | remember | recall | forget | list | entities | facts |
+|----------|-----|----------|--------|--------|------|----------|-------|
+| [EverOS](https://everos.evermind.ai) | `everos` | yes | yes | yes | yes | yes | yes |
+| [Hindsight](https://hindsight.vectorize.io) | `hindsight` | yes | yes | no | no | no | no |
+| [NAMS](https://memory.neo4jlabs.com) | `nams` | yes | yes | yes | yes | yes | yes |
+| [Zep](https://help.getzep.com) | `zep` | yes | yes | yes | yes | no | yes |
+| [Mem0](https://docs.mem0.ai) | `mem0` | yes | yes | yes | yes | no | no |
+| [Supermemory](https://console.supermemory.ai) | `supermemory` | yes | yes | yes | yes | no | no |
 
 ## Interface
-
-Every provider implements `MemoryProvider`:
 
 ```typescript
 interface MemoryProvider {
   readonly name: string;
-  store(messages: Message[]): Promise<void>;
-  search(query: string, options?: SearchOptions): Promise<MemoryItem[]>;
-  get(options?: GetOptions): Promise<MemoryItem[]>;
-  delete(target: DeleteTarget): Promise<void>;
-  analyze(query: string): Promise<AnalyzeResult>;
+
+  // Core (every provider)
+  remember(messages: Message[]): Promise<void>;
+  recall(query: string, options?: RecallOptions): Promise<Memory[]>;
+  forget(target: { id?: string; userId?: string; sessionId?: string }): Promise<void>;
+
+  // Optional
+  list?(options?: ListOptions): Promise<Memory[]>;
   flush?(): Promise<void>;
+  entities?(query?: string): Promise<Entity[]>;
+  facts?(query?: string): Promise<Fact[]>;
 }
 ```
+
+### Nouns
+
+| Type | What it represents | Example |
+|------|-------------------|---------|
+| `Memory` | Episodic record (what happened) | "User discussed coffee preferences" |
+| `Entity` | Extracted node (person, concept, tool) | `{ name: "Neovim", type: "tool" }` |
+| `Fact` | Extracted relation (edge between entities) | `{ subject: "user", predicate: "prefers", object: "dark mode" }` |
+
+### Verbs
+
+| Method | What it does |
+|--------|-------------|
+| `remember` | Persist conversation messages |
+| `recall` | Semantic search for relevant memories |
+| `forget` | Remove memories |
+| `list` | Retrieve memories by filter (non-query) |
+| `flush` | Force async memory extraction |
+| `entities` | Get extracted entity nodes |
+| `facts` | Get extracted fact relations |
 
 ## License
 

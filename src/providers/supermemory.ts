@@ -1,11 +1,9 @@
 import type {
   MemoryProvider,
   Message,
-  MemoryItem,
-  SearchOptions,
-  GetOptions,
-  DeleteTarget,
-  AnalyzeResult,
+  Memory,
+  RecallOptions,
+  ListOptions,
   SupermemoryConfig,
 } from "../types.js";
 
@@ -15,27 +13,22 @@ export class SupermemoryProvider implements MemoryProvider {
   readonly name = "supermemory";
   private readonly apiKey: string;
   private readonly baseUrl: string;
-  private readonly conversationId: string;
 
   constructor(config: SupermemoryConfig) {
     this.apiKey = config.apiKey ?? env("SUPERMEMORY_API_KEY");
     this.baseUrl = DEFAULT_BASE_URL;
-    this.conversationId = config.conversationId ?? `session-${Date.now()}`;
   }
 
-  async store(messages: Message[]): Promise<void> {
+  async remember(messages: Message[]): Promise<void> {
     for (const m of messages) {
       await this.post("/memories", {
         content: m.content,
-        metadata: {
-          role: m.role,
-          ...m.metadata,
-        },
+        metadata: { role: m.role, ...m.metadata },
       });
     }
   }
 
-  async search(query: string, options?: SearchOptions): Promise<MemoryItem[]> {
+  async recall(query: string, options?: RecallOptions): Promise<Memory[]> {
     const result = await this.post<{
       results: Array<{
         id: string;
@@ -51,15 +44,21 @@ export class SupermemoryProvider implements MemoryProvider {
 
     return (result.results ?? []).map((r) => ({
       id: r.id,
-      text: r.content,
+      content: r.content,
       score: r.score,
       type: "memory",
-      timestamp: r.created_at ? new Date(r.created_at).getTime() : undefined,
+      createdAt: r.created_at ? new Date(r.created_at).getTime() : undefined,
       metadata: r.metadata,
     }));
   }
 
-  async get(options?: GetOptions): Promise<MemoryItem[]> {
+  async forget(target: { id?: string }): Promise<void> {
+    if (target.id) {
+      await this.request("DELETE", `/memories/${target.id}`);
+    }
+  }
+
+  async list(options?: ListOptions): Promise<Memory[]> {
     const limit = options?.pageSize ?? 20;
     const result = await this.request<{
       results: Array<{
@@ -72,26 +71,11 @@ export class SupermemoryProvider implements MemoryProvider {
 
     return (result.results ?? []).map((r) => ({
       id: r.id,
-      text: r.content,
+      content: r.content,
       type: "memory",
-      timestamp: r.created_at ? new Date(r.created_at).getTime() : undefined,
+      createdAt: r.created_at ? new Date(r.created_at).getTime() : undefined,
       metadata: r.metadata,
     }));
-  }
-
-  async delete(target: DeleteTarget): Promise<void> {
-    if (target.memoryId) {
-      await this.request("DELETE", `/memories/${target.memoryId}`);
-    }
-  }
-
-  async analyze(query: string): Promise<AnalyzeResult> {
-    const memories = await this.search(query, { topK: 10 });
-    return {
-      text: memories.map((m) => m.text).join("\n"),
-      sources: memories,
-      metadata: { count: memories.length },
-    };
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {

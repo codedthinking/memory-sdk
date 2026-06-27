@@ -1,11 +1,9 @@
 import type {
   MemoryProvider,
   Message,
-  MemoryItem,
-  SearchOptions,
-  GetOptions,
-  DeleteTarget,
-  AnalyzeResult,
+  Memory,
+  RecallOptions,
+  ListOptions,
   Mem0Config,
 } from "../types.js";
 
@@ -29,7 +27,7 @@ export class Mem0Provider implements MemoryProvider {
     this.projectId = config.projectId;
   }
 
-  async store(messages: Message[]): Promise<void> {
+  async remember(messages: Message[]): Promise<void> {
     await this.post("/memories/", {
       messages: messages.map((m) => ({
         role: m.role,
@@ -39,7 +37,7 @@ export class Mem0Provider implements MemoryProvider {
     });
   }
 
-  async search(query: string, options?: SearchOptions): Promise<MemoryItem[]> {
+  async recall(query: string, options?: RecallOptions): Promise<Memory[]> {
     const result = await this.post<{
       results: Array<{
         id: string;
@@ -57,15 +55,23 @@ export class Mem0Provider implements MemoryProvider {
 
     return (result.results ?? []).map((r) => ({
       id: r.id,
-      text: r.memory,
+      content: r.memory,
       score: r.score,
       type: r.categories?.[0] ?? "memory",
-      timestamp: r.created_at ? new Date(r.created_at).getTime() : undefined,
+      createdAt: r.created_at ? new Date(r.created_at).getTime() : undefined,
       metadata: r.metadata,
     }));
   }
 
-  async get(options?: GetOptions): Promise<MemoryItem[]> {
+  async forget(target: { id?: string; userId?: string }): Promise<void> {
+    if (target.id) {
+      await this.request("DELETE", `/memories/${target.id}/`);
+    } else if (target.userId) {
+      await this.request("DELETE", `/memories/?user_id=${target.userId}`);
+    }
+  }
+
+  async list(options?: ListOptions): Promise<Memory[]> {
     const page = options?.page ?? 1;
     const pageSize = options?.pageSize ?? 20;
     const params = new URLSearchParams();
@@ -86,28 +92,11 @@ export class Mem0Provider implements MemoryProvider {
 
     return (result.results ?? []).map((r) => ({
       id: r.id,
-      text: r.memory,
+      content: r.memory,
       type: r.categories?.[0] ?? "memory",
-      timestamp: r.created_at ? new Date(r.created_at).getTime() : undefined,
+      createdAt: r.created_at ? new Date(r.created_at).getTime() : undefined,
       metadata: r.metadata,
     }));
-  }
-
-  async delete(target: DeleteTarget): Promise<void> {
-    if (target.memoryId) {
-      await this.request("DELETE", `/memories/${target.memoryId}/`);
-    } else if (target.userId) {
-      await this.request("DELETE", `/memories/?user_id=${target.userId}`);
-    }
-  }
-
-  async analyze(query: string): Promise<AnalyzeResult> {
-    const memories = await this.search(query, { topK: 10 });
-    return {
-      text: memories.map((m) => m.text).join("\n"),
-      sources: memories,
-      metadata: { count: memories.length },
-    };
   }
 
   private scopeParams(): Record<string, string | undefined> {

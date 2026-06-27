@@ -1,11 +1,10 @@
 import type {
   MemoryProvider,
   Message,
-  MemoryItem,
-  SearchOptions,
-  GetOptions,
-  DeleteTarget,
-  AnalyzeResult,
+  Memory,
+  Fact,
+  RecallOptions,
+  ListOptions,
   ZepConfig,
 } from "../types.js";
 
@@ -27,7 +26,7 @@ export class ZepProvider implements MemoryProvider {
     }
   }
 
-  async store(messages: Message[]): Promise<void> {
+  async remember(messages: Message[]): Promise<void> {
     if (!this.threadId) {
       const thread = await this.post<{ uuid: string }>("/threads", {
         metadata: { user_id: this.userId },
@@ -45,7 +44,7 @@ export class ZepProvider implements MemoryProvider {
     });
   }
 
-  async search(query: string, options?: SearchOptions): Promise<MemoryItem[]> {
+  async recall(query: string, options?: RecallOptions): Promise<Memory[]> {
     const result = await this.post<{
       results: Array<{
         message: { uuid: string; content: string; role: string };
@@ -62,14 +61,22 @@ export class ZepProvider implements MemoryProvider {
 
     return (result.results ?? []).map((r) => ({
       id: r.message.uuid,
-      text: r.message.content,
+      content: r.message.content,
       score: r.score,
       type: "message",
       metadata: { role: r.message.role, ...r.metadata },
     }));
   }
 
-  async get(options?: GetOptions): Promise<MemoryItem[]> {
+  async forget(target: { id?: string; sessionId?: string }): Promise<void> {
+    if (target.id && this.threadId) {
+      await this.request("DELETE", `/threads/${this.threadId}/messages/${target.id}`);
+    } else if (target.sessionId) {
+      await this.request("DELETE", `/threads/${target.sessionId}`);
+    }
+  }
+
+  async list(options?: ListOptions): Promise<Memory[]> {
     if (!this.threadId) return [];
 
     const limit = options?.pageSize ?? 20;
@@ -85,38 +92,26 @@ export class ZepProvider implements MemoryProvider {
 
     return (result.messages ?? []).map((m) => ({
       id: m.uuid,
-      text: m.content,
+      content: m.content,
       type: "message",
-      timestamp: new Date(m.created_at).getTime(),
+      createdAt: new Date(m.created_at).getTime(),
       metadata: { role: m.role, ...m.metadata },
     }));
   }
 
-  async delete(target: DeleteTarget): Promise<void> {
-    if (target.memoryId) {
-      await this.request("DELETE", `/threads/${this.threadId}/messages/${target.memoryId}`);
-    } else if (target.sessionId) {
-      await this.request("DELETE", `/threads/${target.sessionId}`);
-    }
-  }
-
-  async analyze(query: string): Promise<AnalyzeResult> {
-    if (!this.threadId) {
-      return { text: "No thread context available." };
-    }
+  async facts(_query?: string): Promise<Fact[]> {
+    if (!this.threadId) return [];
 
     const memory = await this.request<{
       facts?: string[];
-      summary?: { content: string };
     }>("GET", `/threads/${this.threadId}/memory`);
 
-    const facts = memory.facts ?? [];
-    const summary = memory.summary?.content ?? "";
-
-    return {
-      text: [summary, ...facts].filter(Boolean).join("\n"),
-      metadata: { factCount: facts.length, hasSummary: !!summary },
-    };
+    return (memory.facts ?? []).map((fact, i) => ({
+      id: `fact-${i}`,
+      subject: this.userId ?? "user",
+      predicate: "knows",
+      object: fact,
+    }));
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {

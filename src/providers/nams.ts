@@ -1,11 +1,11 @@
 import type {
   MemoryProvider,
   Message,
-  MemoryItem,
-  SearchOptions,
-  GetOptions,
-  DeleteTarget,
-  AnalyzeResult,
+  Memory,
+  Entity,
+  Fact,
+  RecallOptions,
+  ListOptions,
   NAMSConfig,
 } from "../types.js";
 
@@ -22,7 +22,7 @@ export class NAMSProvider implements MemoryProvider {
     this.baseUrl = config.baseUrl ?? DEFAULT_BASE_URL;
   }
 
-  async store(messages: Message[]): Promise<void> {
+  async remember(messages: Message[]): Promise<void> {
     if (!this.conversationId) {
       const conv = await this.post<{ id: string }>("/v1/conversations", {
         title: `session-${Date.now()}`,
@@ -39,8 +39,8 @@ export class NAMSProvider implements MemoryProvider {
     });
   }
 
-  async search(query: string, options?: SearchOptions): Promise<MemoryItem[]> {
-    const entities = await this.post<{
+  async recall(query: string, options?: RecallOptions): Promise<Memory[]> {
+    const result = await this.post<{
       entities: Array<{
         id: string;
         name: string;
@@ -53,41 +53,27 @@ export class NAMSProvider implements MemoryProvider {
       limit: options?.topK ?? 10,
     });
 
-    return entities.entities.map((e) => ({
+    return result.entities.map((e) => ({
       id: e.id,
-      text: e.description ?? e.name,
+      content: e.description ?? e.name,
       score: e.score,
       type: e.type ?? "entity",
       metadata: { name: e.name },
     }));
   }
 
-  async get(options?: GetOptions): Promise<MemoryItem[]> {
+  async forget(target: { id?: string }): Promise<void> {
+    if (target.id) {
+      await this.request("DELETE", `/v1/entities/${target.id}`);
+    }
+  }
+
+  async list(options?: ListOptions): Promise<Memory[]> {
     const page = options?.page ?? 1;
     const pageSize = options?.pageSize ?? 20;
     const offset = (page - 1) * pageSize;
 
-    if (options?.type === "entity" || !options?.type) {
-      const result = await this.request<{
-        entities: Array<{
-          id: string;
-          name: string;
-          description?: string;
-          type?: string;
-          created_at?: string;
-        }>;
-      }>("GET", `/v1/entities?limit=${pageSize}&offset=${offset}`);
-
-      return result.entities.map((e) => ({
-        id: e.id,
-        text: e.description ?? e.name,
-        type: e.type ?? "entity",
-        timestamp: e.created_at ? new Date(e.created_at).getTime() : undefined,
-        metadata: { name: e.name },
-      }));
-    }
-
-    if (options.type === "conversation" && this.conversationId) {
+    if (options?.type === "conversation" && this.conversationId) {
       const result = await this.request<{
         messages: Array<{
           id: string;
@@ -99,41 +85,118 @@ export class NAMSProvider implements MemoryProvider {
 
       return result.messages.map((m) => ({
         id: m.id,
-        text: m.content,
+        content: m.content,
         type: "message",
-        timestamp: m.timestamp ? new Date(m.timestamp).getTime() : undefined,
+        createdAt: m.timestamp ? new Date(m.timestamp).getTime() : undefined,
         metadata: { role: m.role },
       }));
     }
 
-    return [];
+    const result = await this.request<{
+      entities: Array<{
+        id: string;
+        name: string;
+        description?: string;
+        type?: string;
+        created_at?: string;
+      }>;
+    }>("GET", `/v1/entities?limit=${pageSize}&offset=${offset}`);
+
+    return result.entities.map((e) => ({
+      id: e.id,
+      content: e.description ?? e.name,
+      type: e.type ?? "entity",
+      createdAt: e.created_at ? new Date(e.created_at).getTime() : undefined,
+      metadata: { name: e.name },
+    }));
   }
 
-  async delete(target: DeleteTarget): Promise<void> {
-    if (target.memoryId) {
-      await this.request("DELETE", `/v1/entities/${target.memoryId}`);
+  async entities(query?: string): Promise<Entity[]> {
+    if (query) {
+      const result = await this.post<{
+        entities: Array<{
+          id: string;
+          name: string;
+          description?: string;
+          type?: string;
+          score?: number;
+        }>;
+      }>("/v1/entities/search", { query, limit: 20 });
+
+      return result.entities.map((e) => ({
+        id: e.id,
+        name: e.name,
+        type: e.type,
+        description: e.description,
+        metadata: { score: e.score },
+      }));
     }
+
+    const result = await this.request<{
+      entities: Array<{
+        id: string;
+        name: string;
+        description?: string;
+        type?: string;
+      }>;
+    }>("GET", "/v1/entities?limit=50");
+
+    return result.entities.map((e) => ({
+      id: e.id,
+      name: e.name,
+      type: e.type,
+      description: e.description,
+    }));
   }
 
-  async analyze(query: string): Promise<AnalyzeResult> {
-    if (!this.conversationId) {
-      return { text: "No conversation context available." };
+  async facts(query?: string): Promise<Fact[]> {
+    if (!query) {
+      const result = await this.request<{
+        graph: Array<{
+          source: { id: string; name: string };
+          relation: string;
+          target: { id: string; name: string };
+        }>;
+      }>("GET", "/v1/entities/graph");
+
+      return result.graph.map((edge, i) => ({
+        id: `rel-${i}`,
+        subject: edge.source.name,
+        predicate: edge.relation,
+        object: edge.target.name,
+        metadata: { sourceId: edge.source.id, targetId: edge.target.id },
+      }));
     }
 
-    const context = await this.request<{
-      short_term: unknown;
-      long_term: unknown;
-      episodic: unknown;
-    }>("GET", `/v1/conversations/${this.conversationId}/context`);
+    // Search entities then expand their graph
+    const ents = await this.entities(query);
+    if (!ents.length) return [];
 
-    const observations = await this.request<{
-      observations: Array<{ id: string; content: string }>;
-    }>("GET", `/v1/conversations/${this.conversationId}/observations`);
+    const allFacts: Fact[] = [];
+    for (const ent of ents.slice(0, 5)) {
+      const result = await this.post<{
+        nodes: Array<{ id: string; name: string }>;
+        edges: Array<{
+          source: string;
+          relation: string;
+          target: string;
+        }>;
+      }>("/v1/graph/expand", { entity_id: ent.id });
 
-    return {
-      text: observations.observations.map((o) => o.content).join("\n"),
-      metadata: { context },
-    };
+      for (const [i, edge] of result.edges.entries()) {
+        const sourceNode = result.nodes.find((n) => n.id === edge.source);
+        const targetNode = result.nodes.find((n) => n.id === edge.target);
+        allFacts.push({
+          id: `${ent.id}-rel-${i}`,
+          subject: sourceNode?.name ?? edge.source,
+          predicate: edge.relation,
+          object: targetNode?.name ?? edge.target,
+          metadata: { sourceId: edge.source, targetId: edge.target },
+        });
+      }
+    }
+
+    return allFacts;
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
