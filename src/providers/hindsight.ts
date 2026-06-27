@@ -2,7 +2,10 @@ import type {
   MemoryProvider,
   Message,
   Memory,
+  Entity,
+  Fact,
   RecallOptions,
+  ListOptions,
   HindsightConfig,
 } from "../types.js";
 
@@ -22,48 +25,169 @@ export class HindsightProvider implements MemoryProvider {
       config.bankId ?? process.env.HINDSIGHT_BANK_ID ?? "default";
   }
 
+  private bankPath(path: string): string {
+    return `/v1/default/banks/${this.bankId}${path}`;
+  }
+
   async remember(messages: Message[]): Promise<void> {
-    for (const m of messages) {
-      await this.post(`/v1/banks/${this.bankId}/retain`, {
-        content: `[${m.role}] ${m.content}`,
-        metadata: m.metadata,
-        timestamp: m.timestamp ? new Date(m.timestamp).toISOString() : undefined,
-      });
-    }
+    const items = messages.map((m) => ({
+      content: `[${m.role}] ${m.content}`,
+      context: m.role,
+      timestamp: m.timestamp ? new Date(m.timestamp).toISOString() : undefined,
+    }));
+
+    await this.post(this.bankPath("/memories"), {
+      items,
+      async: true,
+    });
   }
 
   async recall(query: string, options?: RecallOptions): Promise<Memory[]> {
     const result = await this.post<{
-      memories: Array<{
+      results: Array<{
         id: string;
-        content: string;
-        score?: number;
-        metadata?: Record<string, unknown>;
-        created_at?: string;
+        text: string;
+        type?: string;
+        context?: string;
+        occurred_start?: string;
+        occurred_end?: string;
+        entities?: string[];
+        chunk_id?: string;
       }>;
-    }>(`/v1/banks/${this.bankId}/recall`, {
+      entities?: Record<string, {
+        canonical_name: string;
+        entity_id: string;
+        observations?: Array<{ text: string; mentioned_at?: string }>;
+      }>;
+    }>(this.bankPath("/memories/recall"), {
       query,
       budget: options?.method ?? "mid",
-      limit: options?.topK ?? 5,
+      max_tokens: 4096,
+      include: { entities: { max_tokens: 500 } },
     });
 
-    return (result.memories ?? []).map((m) => ({
-      id: m.id,
-      content: m.content,
-      score: m.score,
-      type: "memory",
-      createdAt: m.created_at ? new Date(m.created_at).getTime() : undefined,
-      metadata: m.metadata,
+    return result.results.map((r) => ({
+      id: r.id,
+      content: r.text,
+      type: r.type ?? "memory",
+      createdAt: r.occurred_start ? new Date(r.occurred_start).getTime() : undefined,
+      metadata: {
+        context: r.context,
+        entities: r.entities,
+        chunk_id: r.chunk_id,
+      },
     }));
   }
 
-  async forget(_target: { id?: string }): Promise<void> {
-    throw new Error(
-      "Hindsight REST API does not expose a delete endpoint. Manage retention via the dashboard.",
-    );
+  async forget(target: { id?: string }): Promise<void> {
+    if (target.id) {
+      await this.request("DELETE", this.bankPath(`/memories/${target.id}`));
+    }
+  }
+
+  async list(options?: ListOptions): Promise<Memory[]> {
+    const limit = options?.pageSize ?? 20;
+    const offset = ((options?.page ?? 1) - 1) * limit;
+
+    const result = await this.request<{
+      items: Array<{
+        id: string;
+        text: string;
+        fact_type?: string;
+        context?: string;
+        date?: string;
+        occurred_start?: string | null;
+      }>;
+    }>("GET", this.bankPath(`/memories/list?limit=${limit}&offset=${offset}`));
+
+    return (result.items ?? []).map((m) => ({
+      id: m.id,
+      content: m.text,
+      type: m.fact_type ?? "memory",
+      createdAt: (m.occurred_start ?? m.date)
+        ? new Date((m.occurred_start ?? m.date)!).getTime()
+        : undefined,
+      metadata: { context: m.context },
+    }));
+  }
+
+  async entities(query?: string): Promise<Entity[]> {
+    if (query) {
+      // Recall with entity inclusion to get related entities
+      const result = await this.post<{
+        results: Array<unknown>;
+        entities?: Record<string, {
+          canonical_name: string;
+          entity_id: string;
+          observations?: Array<{ text: string }>;
+        }>;
+      }>(this.bankPath("/memories/recall"), {
+        query,
+        budget: "low",
+        max_tokens: 1024,
+        include: { entities: { max_tokens: 2000 } },
+      });
+
+      return Object.values(result.entities ?? {}).map((e) => ({
+        id: e.entity_id,
+        name: e.canonical_name,
+        description: e.observations?.[0]?.text,
+      }));
+    }
+
+    const result = await this.request<{
+      items: Array<{
+        id: string;
+        canonical_name: string;
+        mention_count?: number;
+      }>;
+    }>("GET", this.bankPath("/entities"));
+
+    return result.items.map((e) => ({
+      id: e.id,
+      name: e.canonical_name,
+      metadata: { mention_count: e.mention_count },
+    }));
+  }
+
+  async facts(query?: string): Promise<Fact[]> {
+    const result = await this.request<{
+      nodes: Array<{ data: { id: string; label: string } }>;
+      edges: Array<{ data: { source: string; target: string; linkType?: string; id?: string } }>;
+    }>("GET", this.bankPath("/entities/graph"));
+
+    const nodeMap = new Map(result.nodes.map((n) => [n.data.id, n.data.label]));
+
+    let facts = result.edges.map((edge) => ({
+      id: edge.data.id ?? `${edge.data.source}-${edge.data.target}`,
+      subject: nodeMap.get(edge.data.source) ?? edge.data.source,
+      predicate: edge.data.linkType ?? "related_to",
+      object: nodeMap.get(edge.data.target) ?? edge.data.target,
+      metadata: { sourceId: edge.data.source, targetId: edge.data.target },
+    }));
+
+    if (query) {
+      const q = query.toLowerCase();
+      facts = facts.filter(
+        (f) =>
+          f.subject.toLowerCase().includes(q) ||
+          f.object.toLowerCase().includes(q) ||
+          f.predicate.toLowerCase().includes(q),
+      );
+    }
+
+    return facts;
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
+    return this.request("POST", path, body);
+  }
+
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<T> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
@@ -72,9 +196,9 @@ export class HindsightProvider implements MemoryProvider {
     }
 
     const res = await fetch(`${this.baseUrl}${path}`, {
-      method: "POST",
+      method,
       headers,
-      body: JSON.stringify(body),
+      ...(body ? { body: JSON.stringify(body) } : {}),
     });
 
     if (!res.ok) {
@@ -82,6 +206,7 @@ export class HindsightProvider implements MemoryProvider {
       throw new Error(`Hindsight API ${res.status}: ${text}`);
     }
 
+    if (res.status === 204) return {} as T;
     return res.json() as Promise<T>;
   }
 }
