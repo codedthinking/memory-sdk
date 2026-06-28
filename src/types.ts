@@ -140,10 +140,15 @@ export interface SupermemoryConfig {
   conversationId?: string;
 }
 
+export interface InMemoryConfig {
+  provider: "memory";
+}
+
 export type MemoryProviderConfig =
   | EverOSConfig
   | HindsightConfig
   | NAMSConfig
   | ZepConfig
   | Mem0Config
-  | SupermemoryConfig;
+  | SupermemoryConfig
+  | InMemoryConfig;

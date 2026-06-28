@@ -14,6 +14,7 @@ export type {
   ZepConfig,
   Mem0Config,
   SupermemoryConfig,
+  InMemoryConfig,
 } from "./types.js";
 
 export { createMemoryProvider } from "./factory.js";
