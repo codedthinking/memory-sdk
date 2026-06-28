@@ -10,6 +10,8 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Skip releases triggered by the bot's own version-bump commits
+    if: "!contains(github.event.head_commit.message, 'chore: bump version')"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -28,37 +30,36 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
-      - name: Bump version
-        id: bump
+      - name: Determine version
+        id: version
         run: |
-          CURRENT=$(node -p "require('./package.json').version")
-          # Bump patch version
-          IFS='.' read -r major minor patch <<< "$CURRENT"
-          NEW_VERSION="$major.$minor.$((patch + 1))"
-          npm version "$NEW_VERSION" --no-git-tag-version
+          # Derive version from last tag, or start at 0.1.0
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            # Strip leading 'v'
+            CURRENT="${LAST_TAG#v}"
+            IFS='.' read -r major minor patch <<< "$CURRENT"
+            NEW_VERSION="$major.$minor.$((patch + 1))"
+          else
+            NEW_VERSION="0.1.0"
+          fi
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Bumped $CURRENT → $NEW_VERSION"
-
-      - name: Commit version bump
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json
-          git commit -m "chore: bump version to v${{ steps.bump.outputs.version }}" || echo "No changes to commit"
-          git push
+          echo "last_tag=$LAST_TAG" >> "$GITHUB_OUTPUT"
+          echo "Release version: $NEW_VERSION"
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="v${{ steps.bump.outputs.version }}"
-          # Generate changelog from commits since last tag
-          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          VERSION="v${{ steps.version.outputs.version }}"
+          LAST_TAG="${{ steps.version.outputs.last_tag }}"
+
           if [ -n "$LAST_TAG" ]; then
             CHANGELOG=$(git log "$LAST_TAG"..HEAD --pretty=format:"- %s" --no-merges)
           else
             CHANGELOG=$(git log --pretty=format:"- %s" --no-merges -20)
           fi
+
           gh release create "$VERSION" \
             --title "$VERSION" \
             --notes "$CHANGELOG" \
