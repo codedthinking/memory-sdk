@@ -138,6 +138,24 @@ No API key or network access required — useful for demos, tests, and as a fall
 const memory = await createMemoryProvider({ provider: "memory" });
 ```
 
+## AI SDK integration
+
+Use `@codedthinking/memory-sdk/ai-tools` to get `tool()` wrappers for `streamText` / `generateText`.
+Requires `ai` and `zod` as peer dependencies (both optional — only needed if you use this entry point).
+
+```typescript
+import { createMemoryProvider } from "@codedthinking/memory-sdk";
+import { memoryTools } from "@codedthinking/memory-sdk/ai-tools";
+
+const provider = await createMemoryProvider({ provider: "hindsight", apiKey: "..." });
+const tools = memoryTools(provider);
+
+// Use with streamText
+streamText({ model, messages, tools: { ...tools, ...otherTools } });
+```
+
+Produces three tools: `remember`, `recall`, `forget` — works with any provider.
+
 ## License
 
 MIT
