@@ -32,6 +32,10 @@ export async function createMemoryProvider(
       const { SupermemoryProvider } = await import("./providers/supermemory.js");
       return new SupermemoryProvider(config);
     }
+    case "memory": {
+      const { InMemoryProvider } = await import("./providers/memory.js");
+      return new InMemoryProvider(config);
+    }
     default:
       throw new Error(
         `Unknown provider: ${(config as { provider: string }).provider}`,

@@ -1,6 +1,6 @@
 # Memory SDK
 
-Thin provider-agnostic wrapper for AI memory backends. One interface, six providers.
+Thin provider-agnostic wrapper for AI memory backends. One interface, seven providers.
 
 ## Install
 
@@ -54,6 +54,7 @@ await memory.forget({ id: "mem-123" });
 | [Zep](https://help.getzep.com) | `zep` | yes | yes | yes | yes | | yes | yes | |
 | [Mem0](https://docs.mem0.ai) | `mem0` | yes | yes | yes | yes | | | | |
 | [Supermemory](https://console.supermemory.ai) | `supermemory` | yes | yes | yes | yes | | | | |
+| In-Memory (mock) | `memory` | yes | yes | yes | yes | yes | yes | yes | yes |
 
 ## Interface
 
@@ -123,6 +124,18 @@ interface MemoryProvider {
 
 // Supermemory
 { provider: "supermemory", apiKey?, conversationId? }
+
+// In-Memory (no API key needed — demo/test/fallback)
+{ provider: "memory" }
+```
+
+### Using the in-memory fallback
+
+The `memory` provider stores everything in process memory with naive keyword matching.
+No API key or network access required — useful for demos, tests, and as a fallback:
+
+```typescript
+const memory = await createMemoryProvider({ provider: "memory" });
 ```
 
 ## License
